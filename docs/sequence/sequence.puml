@@ -1,0 +1,173 @@
+@startuml
+!pragma teoz true
+title Sequence Diagram
+
+hide footbox
+autonumber
+skinparam maxMessageSize 90
+skinparam ParticipantPadding 18
+skinparam BoxPadding 10
+
+actor "Канал поступления\n(И1, И2, И3)" as Source
+control "SimulationEngine" as Engine
+queue "EventCalendar" as Calendar
+control "PlacementDispatcher\n(Д1ОЗ3 / Д1ОО3)" as DP
+collections "Buffer" as Buffer
+control "SelectionDispatcher\n(Д2Б5 / Д2П2)" as DV
+entity "ProcessingBatch" as Batch
+participant "ProcessorPool\n(ПЗ2)" as Pool
+collections "StatisticsCollector" as Stats
+
+note over Source, Stats
+  ИБ, ИЗ1: бесконечные источники, интервалы между заявками Exp(lambda).
+  ПЗ2: время обслуживания каждого запроса Uniform(a,b).
+  Допущение: меньший номер источника означает больший приоритет.
+  Пакет Д2Б5 — фиксированный снимок заявок одного источника,
+  присутствующих в буфере при выборе пакета.
+end note
+
+Engine -> Calendar: scheduleArrival(sourceId, initialTime)
+note over Engine, Calendar
+  Инициализация события поступления для каждого источника.
+  После последней генерации оставшиеся заявки продолжают обслуживаться.
+end note
+
+loop Пока в календаре есть события
+  Engine -> Calendar: popEarliest()
+  Calendar --> Engine: event(type, time, data)
+  Engine -> Engine: currentTime = event.time
+
+  alt Поступление заявки — ARRIVAL
+    Engine -> Source: generateRequest(sourceId, currentTime)
+    Source --> Engine: request
+    Engine -> Stats: recordGenerated(request)
+    Stats --> Engine: OK
+
+    Engine -> DP: place(request)
+    DP -> Buffer: firstFreeSlot()  // Д1ОЗ3
+
+    alt Свободное место есть
+      Buffer --> DP: slotIndex
+      DP -> Buffer: put(slotIndex, request)
+      Buffer --> DP: placed
+
+    else Буфер полон: вытеснение — Д1ОО3
+      Buffer --> DP: noFreeSlot
+      DP -> Buffer: findOldestByArrivalTime()
+      Buffer --> DP: oldestRequest
+      DP -> Buffer: replace(oldestRequest.id, request)
+      Buffer --> DP: replaced
+    end
+
+    DP --> Engine: placementResult(evictedRequestId?)
+    opt Была вытеснена старая заявка
+      Engine -> Stats: recordRejected(evictedRequestId)
+      Stats --> Engine: OK
+      Engine -> DV: onRequestEvicted(evictedRequestId)
+      DV -> Batch: removePendingIfPresent(evictedRequestId)
+      Batch --> DV: updated / notInActiveBatch
+      DV --> Engine: OK
+      note over Buffer, Batch
+        Если вытеснена ожидающая заявка активного пакета,
+        она больше не может быть обслужена.
+        Состав пакета не пополняется новыми заявками.
+      end note
+    end
+
+    Engine -> Source: sampleNextArrivalDelay()  // ИЗ1
+    Source --> Engine: deltaT ~ Exp(lambda)
+    opt Генерация заявок ещё не завершена
+      Engine -> Calendar: scheduleArrival(sourceId, currentTime + deltaT)
+      Calendar --> Engine: scheduled
+    end
+
+  else Завершение обслуживания — SERVICE_COMPLETED
+    Engine -> Pool: complete(processorId, requestId)
+    Pool --> Engine: processorIsFree
+    Engine -> DV: onRequestCompleted(requestId)
+    DV -> Batch: markCompleted(requestId)
+    Batch --> DV: remainingPendingAndRunning
+    DV --> Engine: OK
+    Engine -> Stats: recordCompleted(requestId, currentTime)
+    Stats --> Engine: OK
+
+  end
+
+  group Диспетчеризация после события — триггер: поступление заявки / освобождение прибора
+    Engine -> DV: dispatchReady(currentTime)
+    DV -> Pool: hasFreeProcessor()
+    Pool --> DV: yes / no
+
+    alt Все приборы заняты
+      note over DV, Pool
+        Новые заявки остаются в буфере.
+        Активный пакет (если есть) сохраняется.
+      end note
+
+    else Есть свободный прибор
+      DV -> Batch: status()
+      Batch --> DV: absent / active / completed
+
+      alt Активный пакет существует и не завершён
+        note over DV, Batch
+          Работаем только с этим пакетом.
+          Новые заявки того же источника в него не включаем.
+        end note
+
+      else Пакета нет или предыдущий полностью завершён
+        opt Предыдущий пакет завершён
+          DV -> Batch: close()
+          Batch --> DV: closed
+        end
+
+        DV -> Buffer: getSourceIdsWithWaitingRequests()
+        Buffer --> DV: sourceIds
+
+        alt Есть заявки в буфере
+          DV -> DV: chooseHighestPrioritySource(sourceIds) // Д2Б5
+          DV -> Buffer: getRequestIdsBySource(sourceId)
+          Buffer --> DV: snapshotIds
+          DV -> Batch: start(sourceId, snapshotIds, currentTime)
+          Batch --> DV: batchCreated
+          note over DV, Batch
+            Снимок фиксируется при создании пакета.
+            Заявки остаются в буфере до передачи на прибор.
+          end note
+        else Буфер пуст
+          note over DV, Buffer
+            Приборы простаивают до следующего поступления.
+          end note
+        end
+      end
+
+      loop Пока есть свободный прибор и ожидающая заявка активного пакета
+        DV -> Pool: firstFreeFromCircularPointer(pointer) // Д2П2
+        Pool --> DV: processorId
+        DV -> Batch: nextPendingRequestId() // внутри пакета: по времени поступления
+        Batch --> DV: requestId
+        DV -> Buffer: take(requestId)
+        Buffer --> DV: request
+        DV -> Stats: recordServiceStart(requestId, currentTime)
+        Stats --> DV: OK
+        DV -> Pool: start(processorId, request)
+        Pool --> DV: duration ~ Uniform(a,b) // ПЗ2
+        DV -> Batch: markRunning(requestId, processorId)
+        Batch --> DV: OK
+        DV -> Calendar: scheduleServiceCompletion(processorId, requestId, currentTime + duration)
+        Calendar --> DV: scheduled
+        DV -> DV: pointer = (processorId + 1) mod processorCount
+      end
+
+      opt Все ожидающие заявки текущего пакета уже выданы приборам
+        note over DV, Pool
+          Если другие заявки текущего пакета ещё обрабатываются,
+          свободные приборы ждут их завершения.
+          Следующий пакет НЕ выбирается преждевременно.
+        end note
+      end
+    end
+    DV --> Engine: dispatchFinished
+  end
+end
+
+@enduml
