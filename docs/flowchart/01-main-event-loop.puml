@@ -1,0 +1,60 @@
+@startuml
+
+title Flowchart \nОсновной цикл моделирования
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam defaultFontName DejaVu Sans
+skinparam activity {
+  BackgroundColor #F7F9FC
+  BorderColor #536271
+  DiamondBackgroundColor #FFF6DE
+  DiamondBorderColor #AD8842
+  ArrowColor #657489
+}
+
+|SimulationEngine|
+start
+:validate(config);\ninitialize();
+:currentTime = 0;\ngeneratedTotal = 0;
+
+|Source|
+:Для каждого источника И1..Иn:\nполучить первый интервал\nпо ИЗ1 (Exp(lambda));
+|EventCalendar|
+:scheduleArrival(sourceId, firstTime)\nдля каждого источника;
+
+|SimulationEngine|
+while (В календаре есть события?) is (да)
+  |EventCalendar|
+  :event = popEarliest();
+  |SimulationEngine|
+  :currentTime = event.time;
+
+  if (event.type == ARRIVAL?) then (да)
+    if (generatedTotal < targetRequests?) then (да)
+      :handleArrival(event)\n(подробно: Flowchart 2);
+      :generatedTotal = generatedTotal + 1;
+    else (нет)
+      :Пропустить лишнее ARRIVAL\nпосле лимита генерации;
+    endif
+  else (SERVICE_COMPLETED)
+    :handleCompletion(event)\n(подробно: Flowchart 3, часть А);
+  endif
+
+  |SelectionDispatcher|
+  :dispatchReady(currentTime)\n(подробно: Flowchart 3, часть Б);
+  |SimulationEngine|
+  :Пошагово: календарь событий,\nформализованная схема (ОД2),\nбуфер, приборы, указатели, доля отказов; 
+endwhile (нет)
+
+|StatisticsCollector|
+:buildReport(totalSimulationTime)\nСводная таблица ОР1;
+|SimulationEngine|
+:Завершить моделирование;
+note right
+  ИБ: источник формально бесконечный.
+  targetRequests ограничивает лишь запуск симуляции.
+  После последнего ARRIVAL система дорабатывает
+  уже принятые заявки до опустошения календаря.
+end note
+stop
+@enduml

@@ -1,0 +1,72 @@
+@startuml
+
+title Flowchart \nПоступление заявки и работа буфера
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam defaultFontName DejaVu Sans
+skinparam activity {
+  BackgroundColor #F7F9FC
+  BorderColor #536271
+  DiamondBackgroundColor #FFF6DE
+  DiamondBorderColor #AD8842
+  ArrowColor #657489
+}
+
+|SimulationEngine|
+start
+:Событие ARRIVAL;\ncurrentTime = event.time;
+|Source|
+:request = generateRequest(currentTime);\nисточник = event.sourceId;
+|StatisticsCollector|
+:recordGenerated(request);
+
+|PlacementDispatcher|
+:place(request);
+|Buffer|
+if (Есть первое свободное место?) then (да)
+  :slot = firstFreeSlot();\nput(slot, request);\nД1ОЗ3;
+  |PlacementDispatcher|
+  :result.evictedRequestId = null;
+else (нет)
+  |Buffer|
+  :oldest = findOldestByArrivalTime();\nreplace(oldest.id, request);\nД1ОО3;
+  |PlacementDispatcher|
+  :result.evictedRequestId = oldest.id;
+endif
+
+|SimulationEngine|
+if (Была вытеснена старая заявка?) then (да)
+  |StatisticsCollector|
+  :recordRejected(result.evictedRequestId);
+  |SelectionDispatcher|
+  :onRequestEvicted(result.evictedRequestId);
+  if (Вытесненная заявка ожидает\nв активном пакете?) then (да)
+    |ProcessingBatch|
+    :removePendingIfPresent(requestId);
+    if (Нет pending и нет running?) then (да)
+      :state = COMPLETED;
+    endif
+  endif
+endif
+
+|SimulationEngine|
+if (generatedTotal + 1 < targetRequests?) then (да)
+  |Source|
+  :deltaT = sampleNextArrivalDelay();\nDeltaT ~ Exp(lambda), ИЗ1;
+  |EventCalendar|
+  :scheduleArrival(sourceId,\ncurrentTime + deltaT);
+else (нет)
+  |SimulationEngine|
+  :Следующее ARRIVAL не планировать;
+endif
+
+|SimulationEngine|
+:Вернуться в основной цикл;\nдалее вызывается dispatchReady();
+note right
+  Заявки, входящие в активный пакет,
+  остаются в буфере до назначения на прибор.
+  Д1ОО3 может вытеснить ожидающую заявку
+  даже из активного пакета. Пакет не пополняется.
+end note
+stop
+@enduml

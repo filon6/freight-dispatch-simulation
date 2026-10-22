@@ -1,0 +1,82 @@
+@startuml
+
+title  Flowchart \nПакетное обслуживание (Д2Б5) и приборы по кольцу (Д2П2)
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam defaultFontName DejaVu Sans
+skinparam activity {
+  BackgroundColor #F7F9FC
+  BorderColor #536271
+  DiamondBackgroundColor #FFF6DE
+  DiamondBorderColor #AD8842
+  ArrowColor #657489
+}
+
+|SimulationEngine|
+start
+if (Событие SERVICE_COMPLETED?) then (да)
+  |ProcessorPool|
+  :complete(processorId, requestId, currentTime);\nПрибор освобождён;
+  |SelectionDispatcher|
+  :onRequestCompleted(requestId);
+  |ProcessingBatch|
+  :markCompleted(requestId);\nУбрать из running;
+  if (pending = 0 и running = 0?) then (да)
+    :state = COMPLETED;
+  endif
+  |StatisticsCollector|
+  :recordCompleted(requestId, currentTime);
+endif
+
+|SelectionDispatcher|
+:dispatchReady(currentTime);
+if (Нет активного пакета\nили пакет COMPLETED?) then (да)
+  |Buffer|
+  :sourceIds = getSourceIdsWithWaitingRequests();
+  |SelectionDispatcher|
+  if (Есть ожидающие заявки?) then (да)
+    :sourceId = chooseHighestPrioritySource(sourceIds);\nД2Б5: меньший номер — выше приоритет;
+    |Buffer|
+    :ids = getRequestIdsBySource(sourceId);
+    |ProcessingBatch|
+    :start(sourceId, ids, currentTime);\nФиксированный снимок пакета;
+    |SelectionDispatcher|
+    :activeBatch = новый пакет;
+  else (нет)
+    :Нового пакета нет;\nприборы остаются свободными;
+  endif
+endif
+
+|SelectionDispatcher|
+if (Есть ACTIVE пакет?) then (да)
+  while (Есть свободный прибор\nи pending в пакете?) is (да)
+    |ProcessorPool|
+    :processorId = firstFreeFromCircularPointer(pointer);\nД2П2;
+    |SelectionDispatcher|
+    :circularPointer = следующий после processorId;
+    |ProcessingBatch|
+    :requestId = nextPendingRequest();
+    |Buffer|
+    :request = take(requestId);\nместо освобождено;
+    |ProcessingBatch|
+    :markRunning(requestId, processorId);
+    |ProcessorPool|
+    :duration = start(processorId, request, currentTime);\nПЗ2: Uniform(serviceMin, serviceMax);
+    |EventCalendar|
+    :scheduleServiceCompletion(processorId, requestId,\ncurrentTime + duration);
+    |SelectionDispatcher|
+  endwhile (нет)
+  if (pending = 0, но running > 0?) then (да)
+    :Ждать завершения текущего пакета.\nДругой пакет выбирать НЕЛЬЗЯ;
+  endif
+endif
+|SimulationEngine|
+:Возврат в основной цикл;\nожидание следующего события;
+note right
+  Пакет Д2Б5 не пополняется новыми заявками.
+  Все приборы обслуживают только текущий пакет.
+  Новый пакет выбирается после его завершения
+  (или после вытеснения всех ожидающих заявок).
+end note
+stop
+@enduml
