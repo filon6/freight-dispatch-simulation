@@ -1,0 +1,225 @@
+@startuml
+title Диаграмма классов
+skinparam classAttributeIconSize 0
+skinparam shadowing false
+skinparam linetype ortho
+hide circle
+
+package "Имитационное ядро" {
+  class SimulationConfig {
+    - sourceCount: int
+    - bufferCapacity: int
+    - processorCount: int
+    - arrivalRates: Map
+    - serviceMin: double
+    - serviceMax: double
+    - targetRequests: long
+    + validate(): void
+  }
+  class SimulationEngine {
+    - currentTime: double
+    - generatedTotal: long
+    - config: SimulationConfig
+    - calendar: EventCalendar
+    - placementDispatcher: PlacementDispatcher
+    - selectionDispatcher: SelectionDispatcher
+    - statistics: StatisticsCollector
+    + initialize(): void
+    + step(): SimulationEvent
+    + run(): SimulationReport
+    - handleArrival(event: SimulationEvent): void
+    - handleCompletion(event: SimulationEvent): void
+  }
+  class EventCalendar {
+    - events: PriorityQueue
+    + scheduleArrival(sourceId: int, at: double): void
+    + scheduleServiceCompletion(processorId: int, requestId: String, at: double): void
+    + popEarliest(): SimulationEvent
+    + isEmpty(): boolean
+  }
+  class SimulationEvent {
+    - time: double
+    - type: EventType
+    - sourceId: int
+    - processorId: int
+    - requestId: String
+  }
+  enum EventType {
+    ARRIVAL
+    SERVICE_COMPLETED
+  }
+}
+
+package "Заявки" {
+  class Source {
+    - id: int
+    - channelName: String
+    - lambda: double
+    + generateRequest(currentTime: double): Request
+    + sampleNextArrivalDelay(): double
+  }
+  class Request {
+    - id: String
+    - sourceId: int
+    - createdAt: double
+    - cargo: String
+    - origin: String
+    - destination: String
+    - status: RequestStatus
+    + markQueued(): void
+    + markRejected(): void
+    + markProcessing(): void
+    + markCompleted(): void
+  }
+  enum RequestStatus {
+    CREATED
+    QUEUED
+    PROCESSING
+    COMPLETED
+    REJECTED
+  }
+}
+
+package "Постановка в буфер" {
+  class PlacementDispatcher {
+    - buffer: Buffer
+    + place(request: Request): PlacementResult
+  }
+  class Buffer {
+    - capacity: int
+    - slots: List
+    + firstFreeSlot(): int
+    + put(slotIndex: int, request: Request): boolean
+    + findOldestByArrivalTime(): Request
+    + replace(oldId: String, request: Request): boolean
+    + getSourceIdsWithWaitingRequests(): Set
+    + getRequestIdsBySource(sourceId: int): List
+    + take(requestId: String): Request
+  }
+  class PlacementResult {
+    - placed: boolean
+    - evictedRequestId: String
+  }
+}
+
+package "Пакетная обработка" {
+  class SelectionDispatcher {
+    - buffer: Buffer
+    - pool: ProcessorPool
+    - calendar: EventCalendar
+    - statistics: StatisticsCollector
+    - activeBatch: ProcessingBatch
+    - circularPointer: int
+    + onRequestEvicted(requestId: String): void
+    + onRequestCompleted(requestId: String): void
+    + dispatchReady(currentTime: double): void
+    - chooseHighestPrioritySource(sourceIds: Set): int
+    - distributePending(currentTime: double): void
+  }
+  class ProcessingBatch {
+    - sourceId: int
+    - snapshotRequestIds: List
+    - pendingRequestIds: List
+    - runningRequestIds: Set
+    - state: BatchStatus
+    + start(sourceId: int, requestIds: List, currentTime: double): void
+    + nextPendingRequestId(): String
+    + markRunning(requestId: String, processorId: int): void
+    + markCompleted(requestId: String): void
+    + removePendingIfPresent(requestId: String): boolean
+    + isCompleted(): boolean
+  }
+  enum BatchStatus {
+    ABSENT
+    ACTIVE
+    COMPLETED
+  }
+  class ProcessorPool {
+    - processors: List
+    + hasFreeProcessor(): boolean
+    + firstFreeFromCircularPointer(pointer: int): int
+    + start(processorId: int, request: Request, at: double): double
+    + complete(processorId: int, requestId: String, at: double): boolean
+  }
+  class Processor {
+    - id: int
+    - currentRequest: Request
+    - busyTime: double
+    - minServiceTime: double
+    - maxServiceTime: double
+    + isFree(): boolean
+    + start(request: Request, at: double): double
+    + complete(requestId: String, at: double): Request
+    + utilization(totalTime: double): double
+  }
+}
+
+package "Статистика" {
+  class StatisticsCollector {
+    - generatedBySource: Map
+    - rejectedBySource: Map
+    - requestTimings: Map
+    + recordGenerated(request: Request): void
+    + recordRejected(requestId: String): void
+    + recordServiceStart(requestId: String, at: double): void
+    + recordCompleted(requestId: String, at: double): void
+    + buildReport(pool: ProcessorPool, totalTime: double): SimulationReport
+  }
+  class RequestTiming {
+    - sourceId: int
+    - arrivalAt: double
+    - serviceStartedAt: double
+    - completedAt: double
+  }
+  class SimulationReport {
+    - rejectionProbabilityBySource: Map
+    - meanWaitBySource: Map
+    - meanServiceBySource: Map
+    - processorUtilization: Map
+    + toSourceTable(): Table
+    + toProcessorTable(): Table
+  }
+}
+
+SimulationEngine *-- SimulationConfig
+SimulationEngine *-- EventCalendar
+SimulationEngine *-- Source
+SimulationEngine *-- PlacementDispatcher
+SimulationEngine *-- SelectionDispatcher
+SimulationEngine *-- StatisticsCollector
+SimulationEngine *-- Buffer
+SimulationEngine *-- ProcessorPool
+EventCalendar *-- SimulationEvent
+SimulationEvent --> EventType
+Source ..> Request
+Request --> RequestStatus
+PlacementDispatcher --> Buffer
+PlacementDispatcher ..> PlacementResult
+Buffer o-- Request
+SelectionDispatcher --> Buffer
+SelectionDispatcher --> ProcessorPool
+SelectionDispatcher --> EventCalendar
+SelectionDispatcher --> StatisticsCollector
+SelectionDispatcher *-- ProcessingBatch
+ProcessingBatch --> BatchStatus
+ProcessingBatch ..> Request : IDs фиксированного пакета
+ProcessorPool *-- Processor
+Processor --> Request
+StatisticsCollector *-- RequestTiming
+StatisticsCollector ..> SimulationReport
+StatisticsCollector ..> ProcessorPool
+
+note right of Buffer
+  Д1ОЗ3: первое свободное место.
+  Д1ОО3: вытеснение самой старой заявки.
+end note
+note right of ProcessingBatch
+  Д2Б5: пакет по приоритету источника.
+  Новые заявки в пакет не добавляются.
+  Новый пакет после завершения текущего.
+end note
+note right of ProcessorPool
+  Д2П2: выбор свободного прибора по кольцу.
+  ПЗ2: время обслуживания равномерное.
+end note
+@enduml
