@@ -1,5 +1,8 @@
 package org.example.smo.model;
 
+import org.example.smo.random.DistributionSampler;
+import org.example.smo.random.RandomProvider;
+
 import java.util.Objects;
 import java.util.Random;
 
@@ -7,25 +10,45 @@ public class Source {
     private final int id;
     private final String channelName;
     private final double lambda;
-    private final Random random;
+    private final DistributionSampler sampler;
 
-    public Source(int id, String channelName, double lambda, Random random) {
+    public Source(
+        int id,
+        String channelName,
+        double lambda,
+        RandomProvider random
+    ) {
         if (id <= 0) {
-            throw new IllegalArgumentException("Source ID must be positive");
+            throw new IllegalArgumentException("Invalid source ID");
         }
 
         if (channelName == null || channelName.isBlank()) {
-            throw new IllegalArgumentException("Channel name must not be empty");
+            throw new IllegalArgumentException("Invalid channel name");
         }
 
         if (!Double.isFinite(lambda) || lambda <= 0) {
-            throw new IllegalArgumentException("Lambda must be a positive finite number");
+            throw new IllegalArgumentException("Invalid lambda");
         }
 
         this.id = id;
         this.channelName = channelName;
         this.lambda = lambda;
-        this.random = Objects.requireNonNull(random, "Random generator must not be null");
+        this.sampler = new DistributionSampler(random);
+    }
+
+    @Deprecated
+    public Source(
+        int id,
+        String channelName,
+        double lambda,
+        Random random
+    ) {
+        this(
+            id,
+            channelName,
+            lambda,
+            (RandomProvider) Objects.requireNonNull(random)::nextDouble
+        );
     }
 
     public Request generateRequest(long requestId, double currentTime) {
@@ -40,14 +63,22 @@ public class Source {
     }
 
     public double sampleNextArrivalDelay() {
-        double u = 1.0 - random.nextDouble();
-        double delay = -Math.log(u) / lambda;
+        return sampler.exponential(lambda);
+    }
 
-        if (!Double.isFinite(delay)) {
-            throw new IllegalStateException("Generated arrival delay is not finite");
+    public double nextArrivalTime(double previousArrivalTime) {
+        if (!Double.isFinite(previousArrivalTime)
+            || previousArrivalTime < 0) {
+            throw new IllegalArgumentException("Invalid time");
         }
 
-        return delay;
+        double next = previousArrivalTime + sampleNextArrivalDelay();
+
+        if (!Double.isFinite(next)) {
+            throw new IllegalStateException("Invalid next arrival time");
+        }
+
+        return next;
     }
 
     public int getId() {
