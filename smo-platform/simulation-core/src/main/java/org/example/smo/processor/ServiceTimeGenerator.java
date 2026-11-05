@@ -1,10 +1,9 @@
-package org.example.smo.model;
+package org.example.smo.processor;
 
 import org.example.smo.random.DistributionSampler;
 import org.example.smo.random.RandomProvider;
 
 public final class ServiceTimeGenerator {
-
     private final double min;
     private final double max;
     private final DistributionSampler sampler;

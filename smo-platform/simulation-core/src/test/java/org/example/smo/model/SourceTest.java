@@ -1,6 +1,7 @@
 package org.example.smo.model;
 
 import org.example.smo.random.SeededRandomProvider;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -21,7 +22,7 @@ class SourceTest {
         assertEquals(10, request.getId());
         assertEquals(1, request.getSourceId());
         assertEquals(5.0, request.getCreatedAt());
-        assertEquals(RequestStatus.CREATED, request.getStatus());
+        Assertions.assertEquals(RequestStatus.CREATED, request.getStatus());
     }
 
     @Test

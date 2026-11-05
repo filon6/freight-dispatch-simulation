@@ -1,4 +1,4 @@
-package org.example.smo.model;
+package org.example.smo.processor;
 
 import org.example.smo.random.RandomStreams;
 import org.example.smo.random.SeededRandomProvider;
