@@ -1,3 +1,4 @@
+
 @startuml
 title Диаграмма классов
 skinparam classAttributeIconSize 0
@@ -6,21 +7,29 @@ skinparam linetype ortho
 hide circle
 
 package "Имитационное ядро" {
-  class SimulationConfig {
-    - sourceCount: int
+  class SimulationConfig <<record>> {
+    - sources: List<SourceConfig>
     - bufferCapacity: int
     - processorCount: int
-    - arrivalRates: Map
-    - serviceMin: double
-    - serviceMax: double
+    - serviceTimeMin: double
+    - serviceTimeMax: double
     - targetRequests: long
-    + validate(): void
+    - randomSeed: long
   }
+
+  class SourceConfig <<record>> {
+    - id: int
+    - lambda: double
+  }
+
   class SimulationEngine {
     - currentTime: double
     - generatedTotal: long
     - config: SimulationConfig
+    - sources: List<Source>
     - calendar: EventCalendar
+    - buffer: Buffer
+    - pool: ProcessorPool
     - placementDispatcher: PlacementDispatcher
     - selectionDispatcher: SelectionDispatcher
     - statistics: StatisticsCollector
@@ -30,20 +39,23 @@ package "Имитационное ядро" {
     - handleArrival(event: SimulationEvent): void
     - handleCompletion(event: SimulationEvent): void
   }
+
   class EventCalendar {
-    - events: PriorityQueue
+    - events: PriorityQueue<SimulationEvent>
     + scheduleArrival(sourceId: int, at: double): void
-    + scheduleServiceCompletion(processorId: int, requestId: String, at: double): void
+    + scheduleServiceCompletion(processorId: int, requestId: long, at: double): void
     + popEarliest(): SimulationEvent
     + isEmpty(): boolean
   }
+
   class SimulationEvent {
     - time: double
     - type: EventType
     - sourceId: int
     - processorId: int
-    - requestId: String
+    - requestId: Long
   }
+
   enum EventType {
     ARRIVAL
     SERVICE_COMPLETED
@@ -55,11 +67,12 @@ package "Заявки" {
     - id: int
     - channelName: String
     - lambda: double
-    + generateRequest(currentTime: double): Request
+    + generateRequest(requestId: long, currentTime: double): Request
     + sampleNextArrivalDelay(): double
   }
+
   class Request {
-    - id: String
+    - id: long
     - sourceId: int
     - createdAt: double
     - cargo: String
@@ -71,6 +84,7 @@ package "Заявки" {
     + markProcessing(): void
     + markCompleted(): void
   }
+
   enum RequestStatus {
     CREATED
     QUEUED
@@ -85,20 +99,22 @@ package "Постановка в буфер" {
     - buffer: Buffer
     + place(request: Request): PlacementResult
   }
+
   class Buffer {
     - capacity: int
-    - slots: List
+    - slots: List<Request>
     + firstFreeSlot(): int
     + put(slotIndex: int, request: Request): boolean
     + findOldestByArrivalTime(): Request
-    + replace(oldId: String, request: Request): boolean
-    + getSourceIdsWithWaitingRequests(): Set
-    + getRequestIdsBySource(sourceId: int): List
-    + take(requestId: String): Request
+    + replace(oldId: long, request: Request): boolean
+    + getSourceIdsWithWaitingRequests(): Set<Integer>
+    + getRequestIdsBySource(sourceId: int): List<Long>
+    + take(requestId: long): Request
   }
+
   class PlacementResult {
     - placed: boolean
-    - evictedRequestId: String
+    - evictedRequestId: Long
   }
 }
 
@@ -110,37 +126,41 @@ package "Пакетная обработка" {
     - statistics: StatisticsCollector
     - activeBatch: ProcessingBatch
     - circularPointer: int
-    + onRequestEvicted(requestId: String): void
-    + onRequestCompleted(requestId: String): void
+    + onRequestEvicted(requestId: long): void
+    + onRequestCompleted(requestId: long): void
     + dispatchReady(currentTime: double): void
-    - chooseHighestPrioritySource(sourceIds: Set): int
+    - chooseHighestPrioritySource(sourceIds: Set<Integer>): int
     - distributePending(currentTime: double): void
   }
+
   class ProcessingBatch {
     - sourceId: int
-    - snapshotRequestIds: List
-    - pendingRequestIds: List
-    - runningRequestIds: Set
+    - snapshotRequestIds: List<Long>
+    - pendingRequestIds: List<Long>
+    - runningRequestIds: Set<Long>
     - state: BatchStatus
-    + start(sourceId: int, requestIds: List, currentTime: double): void
-    + nextPendingRequestId(): String
-    + markRunning(requestId: String, processorId: int): void
-    + markCompleted(requestId: String): void
-    + removePendingIfPresent(requestId: String): boolean
+    + start(sourceId: int, requestIds: List<Long>, currentTime: double): void
+    + nextPendingRequestId(): Long
+    + markRunning(requestId: long, processorId: int): void
+    + markCompleted(requestId: long): void
+    + removePendingIfPresent(requestId: long): boolean
     + isCompleted(): boolean
   }
+
   enum BatchStatus {
     ABSENT
     ACTIVE
     COMPLETED
   }
+
   class ProcessorPool {
-    - processors: List
+    - processors: List<Processor>
     + hasFreeProcessor(): boolean
     + firstFreeFromCircularPointer(pointer: int): int
     + start(processorId: int, request: Request, at: double): double
-    + complete(processorId: int, requestId: String, at: double): boolean
+    + complete(processorId: int, requestId: long, at: double): boolean
   }
+
   class Processor {
     - id: int
     - currentRequest: Request
@@ -149,37 +169,41 @@ package "Пакетная обработка" {
     - maxServiceTime: double
     + isFree(): boolean
     + start(request: Request, at: double): double
-    + complete(requestId: String, at: double): Request
+    + complete(requestId: long, at: double): Request
     + utilization(totalTime: double): double
   }
 }
 
 package "Статистика" {
   class StatisticsCollector {
-    - generatedBySource: Map
-    - rejectedBySource: Map
-    - requestTimings: Map
+    - generatedBySource: Map<Integer, Long>
+    - rejectedBySource: Map<Integer, Long>
+    - requestTimings: Map<Long, RequestTiming>
     + recordGenerated(request: Request): void
-    + recordRejected(requestId: String): void
-    + recordServiceStart(requestId: String, at: double): void
-    + recordCompleted(requestId: String, at: double): void
+    + recordRejected(requestId: long): void
+    + recordServiceStart(requestId: long, at: double): void
+    + recordCompleted(requestId: long, at: double): void
     + buildReport(pool: ProcessorPool, totalTime: double): SimulationReport
   }
+
   class RequestTiming {
     - sourceId: int
     - arrivalAt: double
     - serviceStartedAt: double
     - completedAt: double
   }
+
   class SimulationReport {
-    - rejectionProbabilityBySource: Map
-    - meanWaitBySource: Map
-    - meanServiceBySource: Map
-    - processorUtilization: Map
+    - rejectionProbabilityBySource: Map<Integer, Double>
+    - meanWaitBySource: Map<Integer, Double>
+    - meanServiceBySource: Map<Integer, Double>
+    - processorUtilization: Map<Integer, Double>
     + toSourceTable(): Table
     + toProcessorTable(): Table
   }
 }
+
+SimulationConfig *-- SourceConfig
 
 SimulationEngine *-- SimulationConfig
 SimulationEngine *-- EventCalendar
@@ -189,22 +213,29 @@ SimulationEngine *-- SelectionDispatcher
 SimulationEngine *-- StatisticsCollector
 SimulationEngine *-- Buffer
 SimulationEngine *-- ProcessorPool
+
 EventCalendar *-- SimulationEvent
 SimulationEvent --> EventType
+
 Source ..> Request
 Request --> RequestStatus
+
 PlacementDispatcher --> Buffer
 PlacementDispatcher ..> PlacementResult
 Buffer o-- Request
+
 SelectionDispatcher --> Buffer
 SelectionDispatcher --> ProcessorPool
 SelectionDispatcher --> EventCalendar
 SelectionDispatcher --> StatisticsCollector
 SelectionDispatcher *-- ProcessingBatch
+
 ProcessingBatch --> BatchStatus
 ProcessingBatch ..> Request : IDs фиксированного пакета
+
 ProcessorPool *-- Processor
 Processor --> Request
+
 StatisticsCollector *-- RequestTiming
 StatisticsCollector ..> SimulationReport
 StatisticsCollector ..> ProcessorPool
@@ -213,13 +244,16 @@ note right of Buffer
   Д1ОЗ3: первое свободное место.
   Д1ОО3: вытеснение самой старой заявки.
 end note
+
 note right of ProcessingBatch
   Д2Б5: пакет по приоритету источника.
   Новые заявки в пакет не добавляются.
   Новый пакет после завершения текущего.
 end note
+
 note right of ProcessorPool
   Д2П2: выбор свободного прибора по кольцу.
   ПЗ2: время обслуживания равномерное.
 end note
+
 @enduml
