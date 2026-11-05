@@ -3,14 +3,12 @@ package org.example.smo.random;
 import java.util.Objects;
 
 public final class DistributionSampler {
-
     private final RandomProvider random;
 
     public DistributionSampler(RandomProvider random) {
         this.random = Objects.requireNonNull(random);
     }
 
-    // Экспоненциальное распределение для интервалов поступления
     public double exponential(double lambda) {
         if (!Double.isFinite(lambda) || lambda <= 0) {
             throw new IllegalArgumentException("Invalid lambda");
@@ -18,7 +16,6 @@ public final class DistributionSampler {
 
         double u = nextUnitDouble();
 
-        // Исключаем ноль, чтобы не вычислять ln(0)
         u = Math.max(u, Double.MIN_VALUE);
 
         double delay = -Math.log(u) / lambda;
@@ -30,7 +27,6 @@ public final class DistributionSampler {
         return delay;
     }
 
-    // Равномерное распределение для времени обслуживания
     public double uniform(double min, double max) {
         if (!Double.isFinite(min)
             || !Double.isFinite(max)
@@ -46,7 +42,7 @@ public final class DistributionSampler {
         double u = nextUnitDouble();
         double result = min + (max - min) * u;
 
-        return Math.max(min, Math.min(max, result));
+        return Math.clamp(result, min, max);
     }
 
     private double nextUnitDouble() {
