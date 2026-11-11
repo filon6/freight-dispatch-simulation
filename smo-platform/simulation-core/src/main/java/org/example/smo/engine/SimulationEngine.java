@@ -1,6 +1,7 @@
 package org.example.smo.engine;
 
 import org.example.smo.buffer.Buffer;
+import org.example.smo.buffer.PlacementResult;
 import org.example.smo.dispatch.PlacementDispatcher;
 import org.example.smo.dispatch.SelectionDispatcher;
 import org.example.smo.event.EventCalendar;
@@ -12,6 +13,7 @@ import org.example.smo.model.RequestStatus;
 import org.example.smo.model.Source;
 import org.example.smo.processor.ProcessorPool;
 import org.example.smo.trace.TraceRecorder;
+import org.example.smo.stats.StatisticsCollector;
 
 import java.util.HashSet;
 import java.util.List;
@@ -37,13 +39,14 @@ public final class SimulationEngine {
     private boolean initialized;
     private SimulationEvent lastProcessedEvent;
 
+    private final StatisticsCollector statistics;
+
     public SimulationEngine(
         List<Source> sources,
         long targetRequests,
         Map<EventType, Integer> priorities,
         Buffer buffer,
-        ProcessorPool processors
-    ) {
+        ProcessorPool processors) {
         Objects.requireNonNull(sources);
 
         if (sources.isEmpty() || targetRequests <= 0) {
@@ -74,6 +77,13 @@ public final class SimulationEngine {
             buffer,
             trace,
             selection::onRequestEvicted
+        );
+
+        this.statistics = new StatisticsCollector(
+            this.sources.keySet(),
+            processors.snapshot().processors().stream()
+                .map(state -> state.id())
+                .toList()
         );
     }
 
@@ -110,6 +120,12 @@ public final class SimulationEngine {
         }
 
         for (SimulationEvent completion : selection.dispatchReady(clock.getCurrentTime())) {
+            statistics.recordServiceStart(
+                completion.requestId(),
+                completion.processorId(),
+                clock.getCurrentTime()
+            );
+
             calendar.schedule(completion);
         }
 
@@ -149,7 +165,21 @@ public final class SimulationEngine {
 
         generatedTotal++;
 
-        placement.place(request);
+        statistics.recordGenerated(request);
+
+        PlacementResult result = placement.place(request);
+
+        statistics.recordQueued(
+            request.getId(),
+            clock.getCurrentTime()
+        );
+
+        if (result.evictedRequestId() != null) {
+            statistics.recordRejected(
+                result.evictedRequestId(),
+                clock.getCurrentTime()
+            );
+        }
 
         if (generatedTotal == targetRequests) {
             calendar.cancelPendingArrivals();
@@ -170,6 +200,10 @@ public final class SimulationEngine {
         processors.complete(event);
         request.markCompleted();
         selection.onRequestCompleted(request.getId());
+        statistics.recordCompleted(
+            request.getId(),
+            clock.getCurrentTime()
+        );
 
         return request;
     }
@@ -233,6 +267,39 @@ public final class SimulationEngine {
         if (bufferedIds.size() != queued || processingIds.size() != processing) {
             throw new IllegalStateException("Buffer/processor states do not match request statuses");
         }
+
+        Map<Long, StatisticsCollector.RequestSnapshot> recorded =
+            statistics.requestSnapshots();
+
+        if (recorded.size() != requests.size()) {
+            throw new IllegalStateException("Statistics request count mismatch");
+        }
+
+        for (Request request : requests.values()) {
+            StatisticsCollector.RequestSnapshot state = recorded.get(request.getId());
+
+            if (state == null || state.status() != request.getStatus()) {
+                throw new IllegalStateException(
+                    "Statistics status mismatch: " + request.getId()
+                );
+            }
+        }
+
+        long statsGenerated = 0;
+        long statsCompleted = 0;
+        long statsRejected = 0;
+
+        for (StatisticsCollector.SourceSnapshot source : statistics.sourceSnapshots().values()) {
+            statsGenerated += source.generated();
+            statsCompleted += source.completed();
+            statsRejected += source.rejected();
+        }
+
+        if (statsGenerated != generatedTotal
+            || statsCompleted != completed
+            || statsRejected != rejected) {
+            throw new IllegalStateException("Statistics counters mismatch");
+        }
     }
 
     public boolean isFinished() {
@@ -290,5 +357,9 @@ public final class SimulationEngine {
 
     public long getGeneratedTotal() {
         return generatedTotal;
+    }
+
+    public StatisticsCollector getStatistics() {
+        return statistics;
     }
 }
