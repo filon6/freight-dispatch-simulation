@@ -93,6 +93,14 @@ public final class EventCalendar {
         return List.copyOf(result);
     }
 
+    public int cancelPendingArrivals() {
+        int before = events.size();
+
+        events.removeIf(event -> event.type() == EventType.ARRIVAL);
+
+        return before - events.size();
+    }
+
     public boolean isEmpty() {
         return events.isEmpty();
     }

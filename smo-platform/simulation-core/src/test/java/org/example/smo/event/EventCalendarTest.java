@@ -180,4 +180,24 @@ class EventCalendarTest {
 
         assertEquals(1, calendar.size());
     }
+
+    @Test
+    void shouldCancelPendingArrivalsWithoutRemovingCompletions() {
+        Clock clock = new Clock();
+
+        EventCalendar calendar = new EventCalendar(
+            clock,
+            Map.of(EventType.SERVICE_COMPLETED, 0, EventType.ARRIVAL, 1)
+        );
+
+        calendar.schedule(SimulationEvent.arrival(10.0, 1));
+        calendar.schedule(SimulationEvent.arrival(20.0, 2));
+        calendar.schedule(SimulationEvent.serviceCompleted(5.0, 1L, 1, 1));
+
+        assertEquals(2, calendar.cancelPendingArrivals());
+
+        assertEquals(1, calendar.size());
+        assertEquals(EventType.SERVICE_COMPLETED, calendar.peek().type());
+        assertEquals(0.0, clock.getCurrentTime());
+    }
 }
