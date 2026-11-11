@@ -40,6 +40,8 @@ public final class SimulationEngine {
     private SimulationEvent lastProcessedEvent;
 
     private final StatisticsCollector statistics;
+    private Request lastAffectedRequest;
+    private PlacementResult lastPlacementResult;
 
     public SimulationEngine(
         List<Source> sources,
@@ -111,6 +113,7 @@ public final class SimulationEngine {
         }
 
         SimulationEvent event = calendar.popEarliest();
+        lastPlacementResult = null;
         Request affectedRequest;
 
         switch (event.type()) {
@@ -118,6 +121,8 @@ public final class SimulationEngine {
             case SERVICE_COMPLETED -> affectedRequest = handleCompletion(event);
             default -> throw new IllegalStateException("Unknown event type");
         }
+
+        lastAffectedRequest = affectedRequest;
 
         for (SimulationEvent completion : selection.dispatchReady(clock.getCurrentTime())) {
             statistics.recordServiceStart(
@@ -168,6 +173,7 @@ public final class SimulationEngine {
         statistics.recordGenerated(request);
 
         PlacementResult result = placement.place(request);
+        lastPlacementResult = result;
 
         statistics.recordQueued(
             request.getId(),
@@ -361,5 +367,13 @@ public final class SimulationEngine {
 
     public StatisticsCollector getStatistics() {
         return statistics;
+    }
+
+    public Request getLastAffectedRequest() {
+        return lastAffectedRequest;
+    }
+
+    public PlacementResult getLastPlacementResult() {
+        return lastPlacementResult;
     }
 }
