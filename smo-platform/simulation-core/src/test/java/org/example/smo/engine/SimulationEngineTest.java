@@ -9,6 +9,7 @@ import org.example.smo.model.Source;
 import org.example.smo.processor.Processor;
 import org.example.smo.processor.ProcessorPool;
 import org.example.smo.processor.ServiceTimeGenerator;
+import org.example.smo.stats.StatisticsCollector;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -243,5 +244,54 @@ class SimulationEngineTest {
         assertEquals(2L, count(engine, RequestStatus.COMPLETED));
         assertEquals(0L, count(engine, RequestStatus.REJECTED));
         assertTrue(engine.isFinished());
+    }
+
+    @Test
+    void shouldKeepStatisticsConsistentWithEngine() {
+        SimulationEngine engine = engine(
+            List.of(source(1, 1.0)),
+            4,
+            1,
+            1,
+            10.0
+        );
+
+        engine.initialize();
+        engine.runToCompletion();
+
+        var statistics = engine.getStatistics();
+        var source = statistics.sourceSnapshots().get(1);
+
+        assertEquals(4L, source.generated());
+        assertEquals(2L, source.rejected());
+        assertEquals(2L, source.completed());
+        assertEquals(0.5, source.rejectionProbability());
+
+        for (Request request : engine.getRequests()) {
+            var recorded = statistics.requestSnapshot(request.getId());
+
+            assertNotNull(recorded);
+            assertEquals(request.getStatus(), recorded.status());
+            assertEquals(request.getCreatedAt(), recorded.arrivalAt());
+        }
+
+        assertNull(statistics.requestSnapshot(2L).serviceTime());
+        assertNull(statistics.requestSnapshot(3L).serviceTime());
+
+        double totalTime = engine.getClock().getCurrentTime();
+
+        double recordedBusyTime = statistics.processorSnapshots(totalTime)
+            .get(1)
+            .busyTime();
+
+        double actualBusyTime = engine.getProcessors()
+            .snapshot()
+            .processors()
+            .get(0)
+            .busyTime();
+
+        assertEquals(actualBusyTime, recordedBusyTime, 1e-12);
+
+        engine.assertInvariants();
     }
 }
