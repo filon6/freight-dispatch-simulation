@@ -1,6 +1,7 @@
 package org.example.smo.console;
 
 import org.example.smo.batch.ProcessingBatch;
+import org.example.smo.buffer.PlacementResult;
 import org.example.smo.engine.SimulationEngine;
 import org.example.smo.event.SimulationEvent;
 import org.example.smo.model.Request;
@@ -8,8 +9,6 @@ import org.example.smo.model.RequestStatus;
 import org.example.smo.processor.Processor;
 import org.example.smo.processor.ProcessorPool;
 import org.example.smo.stats.StatisticsCollector;
-import org.example.smo.buffer.PlacementResult;
-import org.example.smo.model.Request;
 
 import java.io.PrintStream;
 import java.util.List;
@@ -20,134 +19,213 @@ import java.util.Objects;
 public final class ConsolePrinter {
     private ConsolePrinter() {}
 
-    public static void printState(SimulationEngine engine, int stepCount, PrintStream out) {
+    public static void printState(SimulationEngine engine, int step, PrintStream out) {
         Objects.requireNonNull(engine);
         Objects.requireNonNull(out);
 
         SimulationEvent event = engine.getLastProcessedEvent();
 
-        String eventName = event == null ? "INITIAL" : event.type().name();
+        out.printf(
+            Locale.ROOT,
+            "%n========== ШАГ %d | t=%.3f ==========%n",
+            step,
+            engine.getClock().getCurrentTime()
+        );
 
-        String eventDetails = event == null
-            ? ""
-            : " | source=" + event.sourceId()
-            + (event.requestId() == null ? "" : " | request=" + event.requestId());
+        printEvent(engine, event, out);
+
+        List<Request> requests = engine.getRequests();
+
+        long queued = count(requests, RequestStatus.QUEUED);
+        long processing = count(requests, RequestStatus.PROCESSING);
+        long completed = count(requests, RequestStatus.COMPLETED);
+        long rejected = count(requests, RequestStatus.REJECTED);
 
         out.printf(
             Locale.ROOT,
-            "%nШАГ %d | t=%.3f | %s%s%n",
-            stepCount,
-            engine.getClock().getCurrentTime(),
-            eventName,
-            eventDetails
+            "Создано: %d | Буфер: %d | В работе: %d | Готово: %d | Отказы: %d%n",
+            engine.getGeneratedTotal(),
+            queued,
+            processing,
+            completed,
+            rejected
         );
-        printEventDetails(engine, out);
 
-        out.println("ИСТОЧНИКИ");
-        out.println("ID | Создано | В буфере | На приборах | Завершено | Отказов");
+        out.println("\nИСТОЧНИКИ");
+        out.println("ID | Создано | Буфер | Работа | Готово | Отказы");
 
         Map<Integer, StatisticsCollector.SourceSnapshot> sources =
             engine.getStatistics().sourceSnapshots();
 
-        List<Request> requests = engine.getRequests();
-
         for (var source : sources.values()) {
-            long queued = requests.stream()
+            long sourceQueued = requests.stream()
                 .filter(r -> r.getSourceId() == source.sourceId())
                 .filter(r -> r.getStatus() == RequestStatus.QUEUED)
                 .count();
 
-            long processing = requests.stream()
+            long sourceProcessing = requests.stream()
                 .filter(r -> r.getSourceId() == source.sourceId())
                 .filter(r -> r.getStatus() == RequestStatus.PROCESSING)
                 .count();
 
             out.printf(
                 Locale.ROOT,
-                "%2d | %7d | %8d | %10d | %9d | %7d%n",
+                "%2d | %7d | %5d | %6d | %6d | %6d%n",
                 source.sourceId(),
                 source.generated(),
-                queued,
-                processing,
+                sourceQueued,
+                sourceProcessing,
                 source.completed(),
                 source.rejected()
             );
         }
 
-        out.println("БУФЕР");
-
         List<Request> slots = engine.getBuffer().snapshot();
+        int occupied = (int) slots.stream()
+            .filter(Objects::nonNull)
+            .count();
 
-        for (int index = 0; index < slots.size(); index++) {
-            Request request = slots.get(index);
+        out.printf(
+            "%nБУФЕР [%s] %d/%d%n",
+            "█".repeat(occupied) + "░".repeat(slots.size() - occupied),
+            occupied,
+            slots.size()
+        );
+
+        for (int i = 0; i < slots.size(); i++) {
+            Request request = slots.get(i);
 
             if (request == null) {
-                out.printf(Locale.ROOT, "[%d] свободно%n", index);
+                out.printf("[%d] —%n", i);
             } else {
                 out.printf(
-                    Locale.ROOT,
-                    "[%d] заявка %d, источник %d%n",
-                    index,
+                    "[%d] №%d (И%d)%n",
+                    i,
                     request.getId(),
                     request.getSourceId()
                 );
             }
         }
 
-        out.println("ПРИБОРЫ");
+        out.println("\nПРИБОРЫ");
 
         ProcessorPool.Snapshot pool = engine.getProcessors().snapshot();
 
         for (Processor.Snapshot processor : pool.processors()) {
             if (processor.currentRequestId() == null) {
-                out.printf(
-                    Locale.ROOT,
-                    "П%d: свободен, busyTime=%.3f%n",
-                    processor.id(),
-                    processor.busyTime()
-                );
+                out.printf("П%d | свободен%n", processor.id());
             } else {
                 out.printf(
                     Locale.ROOT,
-                    "П%d: заявка %d, начало=%.3f, конец=%.3f, busyTime=%.3f%n",
+                    "П%d | занят №%d | до %.3f%n",
                     processor.id(),
                     processor.currentRequestId(),
-                    processor.busySince(),
-                    processor.completionTime(),
-                    processor.busyTime()
+                    processor.completionTime()
                 );
             }
         }
 
-        out.println("Следующий поиск прибора: П" + pool.nextProcessorId());
+        out.printf(
+            "Следующий по кольцу: П%d%n",
+            pool.nextProcessorId()
+        );
 
-        ProcessingBatch.Snapshot batch = engine.getSelection().activeBatchSnapshot();
+        ProcessingBatch.Snapshot batch =
+            engine.getSelection().activeBatchSnapshot();
+
+        out.println("\nАКТИВНЫЙ ПАКЕТ");
 
         if (batch == null) {
-            out.println("АКТИВНЫЙ ПАКЕТ: нет");
+            out.println("Нет");
         } else {
+            out.printf("Источник: И%d%n", batch.sourceId());
+            out.printf("Ожидают: %s%n", batch.pending());
             out.printf(
-                "АКТИВНЫЙ ПАКЕТ: источник %d | pending=%s | running=%s | completed=%s | evicted=%s%n",
-                batch.sourceId(),
-                batch.pending(),
-                batch.running(),
+                "В работе (заявка=прибор): %s%n",
+                batch.running()
+            );
+            out.printf(
+                "Завершены: %s | Вытеснены: %s%n",
                 batch.completed(),
                 batch.evicted()
             );
         }
     }
 
-    public static void printFinalTables(SimulationEngine engine, PrintStream out) {
+    private static void printEvent(
+        SimulationEngine engine,
+        SimulationEvent event,
+        PrintStream out
+    ) {
+        if (event == null) {
+            out.println("Начальное состояние");
+            return;
+        }
+
+        Request request = engine.getLastAffectedRequest();
+
+        if (request == null) {
+            throw new IllegalStateException(
+                "Missing request for last event"
+            );
+        }
+
+        switch (event.type()) {
+            case ARRIVAL -> {
+                out.printf(
+                    "ARRIVAL: поступила заявка №%d от И%d%n",
+                    request.getId(),
+                    request.getSourceId()
+                );
+
+                PlacementResult placement =
+                    engine.getLastPlacementResult();
+
+                if (placement == null) {
+                    throw new IllegalStateException(
+                        "Missing placement result"
+                    );
+                }
+
+                out.printf(
+                    "Размещение: ячейка [%d]%n",
+                    placement.slotIndex()
+                );
+
+                if (placement.evictedRequest() != null) {
+                    out.printf(
+                        "ОТКАЗ: вытеснена заявка №%d (И%d) из ячейки [%d]%n",
+                        placement.evictedRequest().getId(),
+                        placement.evictedRequest().getSourceId(),
+                        placement.slotIndex()
+                    );
+                }
+            }
+
+            case SERVICE_COMPLETED -> out.printf(
+                "SERVICE_COMPLETED: заявка №%d завершена на П%d%n",
+                request.getId(),
+                event.processorId()
+            );
+        }
+    }
+
+    public static void printFinalTables(
+        SimulationEngine engine,
+        PrintStream out
+    ) {
         Objects.requireNonNull(engine);
         Objects.requireNonNull(out);
 
         out.println("ИТОГИ ПО ИСТОЧНИКАМ");
-        out.println("ID | Создано | Отказов | Завершено | Pотк | Tпреб | Tож | Tобсл | Dож | Dобсл");
+        out.println(
+            "ID | Создано | Отказы | Готово | Pотк | Tпреб | Tож | Tобсл | Dож | Dобсл"
+        );
 
         for (var source : engine.getStatistics().sourceSnapshots().values()) {
             out.printf(
                 Locale.ROOT,
-                "%d | %d | %d | %d | %s | %s | %s | %s | %s | %s%n",
+                "%2d | %7d | %6d | %6d | %5s | %5s | %5s | %6s | %5s | %6s%n",
                 source.sourceId(),
                 source.generated(),
                 source.rejected(),
@@ -161,8 +239,8 @@ public final class ConsolePrinter {
             );
         }
 
-        out.println("ИТОГИ ПО ПРИБОРАМ");
-        out.println("ID | Время занятости | Коэффициент использования");
+        out.println("\nИТОГИ ПО ПРИБОРАМ");
+        out.println("ID | Занятость | Коэффициент использования");
 
         for (var processor : engine.getStatistics()
             .processorSnapshots(engine.getClock().getCurrentTime())
@@ -170,7 +248,7 @@ public final class ConsolePrinter {
 
             out.printf(
                 Locale.ROOT,
-                "%d | %s | %s%n",
+                "%2d | %9s | %s%n",
                 processor.processorId(),
                 metric(processor.busyTime()),
                 metric(processor.utilization())
@@ -178,64 +256,18 @@ public final class ConsolePrinter {
         }
     }
 
+    private static long count(
+        List<Request> requests,
+        RequestStatus status
+    ) {
+        return requests.stream()
+            .filter(request -> request.getStatus() == status)
+            .count();
+    }
+
     private static String metric(Double value) {
         return value == null
             ? "—"
             : String.format(Locale.ROOT, "%.3f", value);
-    }
-
-    private static void printEventDetails(
-        SimulationEngine engine,
-        PrintStream out
-    ) {
-        SimulationEvent event = engine.getLastProcessedEvent();
-
-        if (event == null) {
-            return;
-        }
-
-        Request request = engine.getLastAffectedRequest();
-
-        if (request == null) {
-            throw new IllegalStateException("Last affected request is missing");
-        }
-
-        switch (event.type()) {
-            case ARRIVAL -> {
-                out.printf(
-                    "СОБЫТИЕ: поступила заявка №%d от источника И%d%n",
-                    request.getId(),
-                    request.getSourceId()
-                );
-
-                PlacementResult result = engine.getLastPlacementResult();
-
-                if (result == null) {
-                    throw new IllegalStateException("Placement result is missing");
-                }
-
-                out.printf(
-                    "РАЗМЕЩЕНИЕ: ячейка %d%n",
-                    result.slotIndex()
-                );
-
-                Request evicted = result.evictedRequest();
-
-                if (evicted != null) {
-                    out.printf(
-                        "ОТКАЗ: вытеснена заявка №%d источника И%d из ячейки %d%n",
-                        evicted.getId(),
-                        evicted.getSourceId(),
-                        result.slotIndex()
-                    );
-                }
-            }
-
-            case SERVICE_COMPLETED -> out.printf(
-                "СОБЫТИЕ: завершено обслуживание заявки №%d на приборе П%d%n",
-                request.getId(),
-                event.processorId()
-            );
-        }
     }
 }

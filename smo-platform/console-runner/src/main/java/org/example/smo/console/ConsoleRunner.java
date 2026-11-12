@@ -45,7 +45,12 @@ public final class ConsoleRunner {
     }
 
     public void runInteractive() throws IOException {
-        out.println("Команды: init, step, state, run, help, exit");
+        initialize();
+
+        out.println("Модель инициализирована");
+        out.println("Команды: Enter — следующий шаг, a — автоматический режим, q — выход");
+
+        ConsolePrinter.printState(engine, stepCount, out);
 
         while (true) {
             out.print("> ");
@@ -57,60 +62,51 @@ public final class ConsoleRunner {
                 return;
             }
 
-            switch (line.trim().toLowerCase(Locale.ROOT)) {
-                case "init" -> {
-                    initialize();
-                    out.println("Модель инициализирована.");
-                    ConsolePrinter.printState(engine, 0, out);
-                }
-                case "step" -> {
-                    if (!ensureInitialized()) {
-                        break;
-                    }
+            String command = line.trim().toLowerCase(Locale.ROOT);
 
-                    if (engine.isFinished()) {
-                        out.println("Моделирование уже завершено.");
-                        break;
-                    }
+            switch (command) {
+                case "" -> nextStep();
 
-                    engine.step();
-                    stepCount++;
-
-                    ConsolePrinter.printState(engine, stepCount, out);
-                }
-                case "state" -> {
-                    if (ensureInitialized()) {
-                        ConsolePrinter.printState(engine, stepCount, out);
-                    }
-                }
-                case "run" -> {
-                    if (ensureInitialized()) {
-                        engine.runToCompletion();
-                        ConsolePrinter.printFinalTables(engine, out);
-                    }
-                }
-                case "help" -> out.println(
-                    "init — новый запуск; step — одно событие; "
-                        + "state — состояние; run — до конца и две таблицы; "
-                        + "exit — выход"
-                );
-                case "exit", "quit" -> {
+                case "a" -> {
+                    runToEnd();
                     return;
                 }
-                case "" -> {
+
+                case "q" -> {
+                    return;
                 }
-                default -> out.println("Неизвестная команда. Используй help.");
+
+                default -> out.println("Нажми Enter для следующего шага, 'a' — до конца, 'q' — выход.");
             }
         }
     }
 
-    private boolean ensureInitialized() {
-        if (engine != null) {
-            return true;
+    private void nextStep() {
+        if (engine.isFinished()) {
+            out.println("Моделирование уже завершено.");
+            ConsolePrinter.printFinalTables(engine, out);
+            return;
         }
 
-        out.println("Сначала введи init.");
-        return false;
+        engine.step();
+        stepCount++;
+
+        ConsolePrinter.printState(engine, stepCount, out);
+
+        if (engine.isFinished()) {
+            out.println("\nМоделирование завершено.");
+            ConsolePrinter.printFinalTables(engine, out);
+        }
+    }
+
+    private void runToEnd() {
+        while (!engine.isFinished()) {
+            engine.step();
+            stepCount++;
+        }
+
+        out.println("\nМоделирование завершено.");
+        ConsolePrinter.printFinalTables(engine, out);
     }
 
     private void initialize() {
@@ -142,7 +138,10 @@ public final class ConsoleRunner {
         engine = new SimulationEngine(
             sources,
             config.targetRequests(),
-            Map.of(EventType.SERVICE_COMPLETED, 0, EventType.ARRIVAL, 1),
+            Map.of(
+                EventType.SERVICE_COMPLETED, 0,
+                EventType.ARRIVAL, 1
+            ),
             new Buffer(config.bufferCapacity()),
             new ProcessorPool(processors)
         );
