@@ -1,259 +1,117 @@
-
 @startuml
-title Диаграмма классов
+' Simplified class diagram for defense.
+' Every class, member and relation shown below exists in the uploaded Java source.
+' Auxiliary classes, enums, record snapshots and many methods are deliberately omitted.
+
+top to bottom direction
 skinparam classAttributeIconSize 0
-skinparam shadowing false
+skinparam packageStyle rectangle
 skinparam linetype ortho
-hide circle
+hide empty members
 
-package "Имитационное ядро" {
-  class SimulationConfig <<record>> {
-    - sources: List<SourceConfig>
-    - bufferCapacity: int
-    - processorCount: int
-    - serviceTimeMin: double
-    - serviceTimeMax: double
-    - targetRequests: long
-    - randomSeed: long
-  }
-
-  class SourceConfig <<record>> {
-    - id: int
-    - lambda: double
-  }
-
+package "engine" {
   class SimulationEngine {
-    - currentTime: double
-    - generatedTotal: long
-    - config: SimulationConfig
-    - sources: List<Source>
-    - calendar: EventCalendar
-    - buffer: Buffer
-    - pool: ProcessorPool
-    - placementDispatcher: PlacementDispatcher
-    - selectionDispatcher: SelectionDispatcher
-    - statistics: StatisticsCollector
     + initialize(): void
-    + step(): SimulationEvent
-    + run(): SimulationReport
-    - handleArrival(event: SimulationEvent): void
-    - handleCompletion(event: SimulationEvent): void
-  }
-
-  class EventCalendar {
-    - events: PriorityQueue<SimulationEvent>
-    + scheduleArrival(sourceId: int, at: double): void
-    + scheduleServiceCompletion(processorId: int, requestId: long, at: double): void
-    + popEarliest(): SimulationEvent
-    + isEmpty(): boolean
-  }
-
-  class SimulationEvent {
-    - time: double
-    - type: EventType
-    - sourceId: int
-    - processorId: int
-    - requestId: Long
-  }
-
-  enum EventType {
-    ARRIVAL
-    SERVICE_COMPLETED
+    + step(): Request
+    + runToCompletion(): void
   }
 }
 
-package "Заявки" {
+package "event" {
+  class EventCalendar {
+    + schedule(event: SimulationEvent): SimulationEvent
+    + popEarliest(): SimulationEvent
+  }
+  class SimulationEvent <<record>> {
+    + time: double
+    + type: EventType
+  }
+}
+
+package "model" {
   class Source {
     - id: int
-    - channelName: String
     - lambda: double
     + generateRequest(requestId: long, currentTime: double): Request
-    + sampleNextArrivalDelay(): double
   }
-
   class Request {
     - id: long
     - sourceId: int
-    - createdAt: double
-    - cargo: String
-    - origin: String
-    - destination: String
     - status: RequestStatus
     + markQueued(): void
     + markRejected(): void
     + markProcessing(): void
     + markCompleted(): void
   }
+}
 
-  enum RequestStatus {
-    CREATED
-    QUEUED
-    PROCESSING
-    COMPLETED
-    REJECTED
+package "buffer" {
+  class Buffer {
+    - slots: List<Request>
+    + place(request: Request): PlacementResult
+    + take(requestId: long): Request
   }
 }
 
-package "Постановка в буфер" {
+package "dispatch" {
   class PlacementDispatcher {
     - buffer: Buffer
     + place(request: Request): PlacementResult
   }
-
-  class Buffer {
-    - capacity: int
-    - slots: List<Request>
-    + firstFreeSlot(): int
-    + put(slotIndex: int, request: Request): boolean
-    + findOldestByArrivalTime(): Request
-    + replace(oldId: long, request: Request): boolean
-    + getSourceIdsWithWaitingRequests(): Set<Integer>
-    + getRequestIdsBySource(sourceId: int): List<Long>
-    + take(requestId: long): Request
-  }
-
-  class PlacementResult {
-    - placed: boolean
-    - evictedRequestId: Long
+  class SelectionDispatcher {
+    - activeBatch: ProcessingBatch
+    + dispatchReady(time: double): List<SimulationEvent>
   }
 }
 
-package "Пакетная обработка" {
-  class SelectionDispatcher {
-    - buffer: Buffer
-    - pool: ProcessorPool
-    - calendar: EventCalendar
-    - statistics: StatisticsCollector
-    - activeBatch: ProcessingBatch
-    - circularPointer: int
-    + onRequestEvicted(requestId: long): void
-    + onRequestCompleted(requestId: long): void
-    + dispatchReady(currentTime: double): void
-    - chooseHighestPrioritySource(sourceIds: Set<Integer>): int
-    - distributePending(currentTime: double): void
-  }
-
+package "batch" {
   class ProcessingBatch {
-    - sourceId: int
-    - snapshotRequestIds: List<Long>
-    - pendingRequestIds: List<Long>
-    - runningRequestIds: Set<Long>
-    - state: BatchStatus
-    + start(sourceId: int, requestIds: List<Long>, currentTime: double): void
-    + nextPendingRequestId(): Long
-    + markRunning(requestId: long, processorId: int): void
-    + markCompleted(requestId: long): void
-    + removePendingIfPresent(requestId: long): boolean
-    + isCompleted(): boolean
+    - pending: Set<Long>
+    - running: Map<Long, Integer>
+    + isFinished(): boolean
   }
+}
 
-  enum BatchStatus {
-    ABSENT
-    ACTIVE
-    COMPLETED
-  }
-
+package "processor" {
   class ProcessorPool {
     - processors: List<Processor>
-    + hasFreeProcessor(): boolean
-    + firstFreeFromCircularPointer(pointer: int): int
-    + start(processorId: int, request: Request, at: double): double
-    + complete(processorId: int, requestId: long, at: double): boolean
+    - nextIndex: int
+    + assign(request: Request, time: double): SimulationEvent
+    + complete(event: SimulationEvent): void
   }
-
   class Processor {
-    - id: int
-    - currentRequest: Request
+    - currentRequestId: Long
     - busyTime: double
-    - minServiceTime: double
-    - maxServiceTime: double
-    + isFree(): boolean
-    + start(request: Request, at: double): double
-    + complete(requestId: long, at: double): Request
-    + utilization(totalTime: double): double
+    + isBusy(): boolean
   }
 }
 
-package "Статистика" {
+package "stats" {
   class StatisticsCollector {
-    - generatedBySource: Map<Integer, Long>
-    - rejectedBySource: Map<Integer, Long>
-    - requestTimings: Map<Long, RequestTiming>
     + recordGenerated(request: Request): void
-    + recordRejected(requestId: long): void
-    + recordServiceStart(requestId: long, at: double): void
+    + recordRejected(requestId: long, at: double): void
     + recordCompleted(requestId: long, at: double): void
-    + buildReport(pool: ProcessorPool, totalTime: double): SimulationReport
-  }
-
-  class RequestTiming {
-    - sourceId: int
-    - arrivalAt: double
-    - serviceStartedAt: double
-    - completedAt: double
-  }
-
-  class SimulationReport {
-    - rejectionProbabilityBySource: Map<Integer, Double>
-    - meanWaitBySource: Map<Integer, Double>
-    - meanServiceBySource: Map<Integer, Double>
-    - processorUtilization: Map<Integer, Double>
-    + toSourceTable(): Table
-    + toProcessorTable(): Table
   }
 }
 
-SimulationConfig *-- SourceConfig
+SimulationEngine --> EventCalendar : calendar
+SimulationEngine --> Source : sources
+SimulationEngine --> Request : requests
+SimulationEngine --> Buffer : buffer
+SimulationEngine --> PlacementDispatcher : placement
+SimulationEngine --> SelectionDispatcher : selection
+SimulationEngine --> ProcessorPool : processors
+SimulationEngine --> StatisticsCollector : statistics
 
-SimulationEngine *-- SimulationConfig
-SimulationEngine *-- EventCalendar
-SimulationEngine *-- Source
-SimulationEngine *-- PlacementDispatcher
-SimulationEngine *-- SelectionDispatcher
-SimulationEngine *-- StatisticsCollector
-SimulationEngine *-- Buffer
-SimulationEngine *-- ProcessorPool
-
-EventCalendar *-- SimulationEvent
-SimulationEvent --> EventType
-
-Source ..> Request
-Request --> RequestStatus
-
-PlacementDispatcher --> Buffer
-PlacementDispatcher ..> PlacementResult
-Buffer o-- Request
-
-SelectionDispatcher --> Buffer
-SelectionDispatcher --> ProcessorPool
-SelectionDispatcher --> EventCalendar
-SelectionDispatcher --> StatisticsCollector
-SelectionDispatcher *-- ProcessingBatch
-
-ProcessingBatch --> BatchStatus
-ProcessingBatch ..> Request : IDs фиксированного пакета
-
-ProcessorPool *-- Processor
-Processor --> Request
-
-StatisticsCollector *-- RequestTiming
-StatisticsCollector ..> SimulationReport
-StatisticsCollector ..> ProcessorPool
-
-note right of Buffer
-  Д1ОЗ3: первое свободное место.
-  Д1ОО3: вытеснение самой старой заявки.
-end note
-
-note right of ProcessingBatch
-  Д2Б5: пакет по приоритету источника.
-  Новые заявки в пакет не добавляются.
-  Новый пакет после завершения текущего.
-end note
-
-note right of ProcessorPool
-  Д2П2: выбор свободного прибора по кольцу.
-  ПЗ2: время обслуживания равномерное.
-end note
+EventCalendar o-- SimulationEvent : events
+Source ..> Request : generates
+Buffer o-- Request : slots
+PlacementDispatcher --> Buffer : buffer
+SelectionDispatcher --> Buffer : buffer
+SelectionDispatcher --> ProcessorPool : processors
+SelectionDispatcher --> ProcessingBatch : activeBatch
+ProcessorPool o-- Processor : processors
+ProcessorPool ..> SimulationEvent : creates
+StatisticsCollector ..> Request : recordGenerated()
 
 @enduml
