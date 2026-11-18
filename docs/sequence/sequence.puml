@@ -28,9 +28,11 @@ note over Runner, Engine
 end note
 Runner -> Engine: initialize()
 loop для каждого источника
-  Engine -> Source: nextArrivalTime(currentTime)
-  Engine -> Calendar: schedule(SimulationEvent.arrival(...))
-end
+  
+Engine -> Source: nextArrivalTime(currentTime)
+Source --> Engine: nextArrivalTime (double) - подумать
+Engine -> Calendar: schedule(SimulationEvent.arrival(nextArrivalTime, sourceId))
+
 note right of Runner: ConsolePrinter.printState(...): шаг 0
 
 == Пошаговый режим ==
@@ -45,10 +47,36 @@ loop при каждом Enter
     Source --> Engine: Request
     Engine -> DP: place(request)
     DP -> Buffer: place(request)
-    Buffer --> DP: PlacementResult
-    opt вытеснение старой заявки
+
+    alt Есть свободная ячейка — Д1ОЗ3
+      note over DP, Buffer
+        Буфер находит первую свободную ячейку
+        и размещает в ней новую заявку.
+      end note
+      Buffer --> DP: PlacementResult(slotIndex, null)
+      note right of DP
+        Новая заявка получает статус QUEUED.
+        Отказов нет.
+      end note
+    else Буфер переполнен — Д1ОО3
+      note over DP, Buffer
+        Буфер выбирает самую старую ожидающую заявку
+        и заменяет её новой в той же ячейке.
+      end note
+      Buffer --> DP: PlacementResult(slotIndex, evictedRequest)
+      note right of DP
+        Старая заявка получает статус REJECTED;
+        вытеснение записывается в журнал.
+        Новая заявка получает статус QUEUED.
+      end note
       DP -> DV: onRequestEvicted(evictedId)
+      note right of DV
+        Исключить вытесненную заявку
+        из ожидающих заявок активного пакета,
+        если она в него входила.
+      end note
     end
+
     DP --> Engine: PlacementResult
     note over Engine, Calendar
       Движок планирует следующее ARRIVAL
@@ -64,10 +92,55 @@ loop при каждом Enter
     Д2Б5 — фиксированный пакет одного источника.
     Д2П2 — назначение свободного прибора по кольцу.
   end note
-  opt найдена заявка для свободного прибора
-    DV -> Buffer: take(requestId)
-    DV -> Pool: assign(request, currentTime)
+  
+  Engine -> DV: dispatchReady(currentTime)
+
+  note over DV, Pool
+    Д2Б5 — фиксированный пакет заявок
+    одного источника с наивысшим приоритетом.
+
+    Если активного пакета нет или он завершён,
+    диспетчер формирует новый пакет.
+
+    Новые заявки в текущий пакет не добавляются.
+  end note
+
+  alt Есть свободный прибор и ожидающая заявка пакета
+
+    loop Пока есть свободные приборы и заявки пакета
+      DV -> Buffer: take(requestId)
+      Buffer --> DV: Request
+
+      DV -> Pool: assign(request, currentTime)
+      note right of Pool
+        Д2П2 — кольцевой выбор свободного прибора.
+        ПЗ2 — равномерное время обслуживания.
+      end note
+      Pool --> DV: SimulationEvent (завершение обслуживания)
+    end
+
+  else Все приборы заняты
+    note over DV, Pool
+      Назначение невозможно.
+      Заявки продолжают ожидать в буфере.
+    end note
+
+  else Нет заявок, доступных для назначения
+    note over DV, Pool
+      Буфер может быть пустым либо
+      текущий пакет ещё обрабатывается.
+
+      Новый пакет нельзя сформировать,
+      пока активный не завершён.
+    end note
   end
+
+  DV --> Engine: List<SimulationEvent>
+
+  loop Для каждого назначенного обслуживания
+    Engine -> Calendar: schedule(completion)
+  end
+
   DV --> Engine: List<SimulationEvent>
   loop для каждого назначенного обслуживания
     Engine -> Calendar: schedule(completion)
