@@ -40,8 +40,11 @@ public final class ConsoleRunner {
 
     public void runAutomatic() {
         initialize();
-        engine.runToCompletion();
-        ConsolePrinter.printFinalTables(engine, out);
+        while (!engine.isFinished()) {
+            engine.step();
+            stepCount++;
+        }
+        ConsolePrinter.printFinalTables(engine, config, stepCount, out);
     }
 
     public void runInteractive() throws IOException {
@@ -84,7 +87,7 @@ public final class ConsoleRunner {
     private void nextStep() {
         if (engine.isFinished()) {
             out.println("Моделирование уже завершено.");
-            ConsolePrinter.printFinalTables(engine, out);
+            ConsolePrinter.printFinalTables(engine, config, stepCount, out);
             return;
         }
 
@@ -94,8 +97,7 @@ public final class ConsoleRunner {
         ConsolePrinter.printState(engine, stepCount, out);
 
         if (engine.isFinished()) {
-            out.println("\nМоделирование завершено.");
-            ConsolePrinter.printFinalTables(engine, out);
+            ConsolePrinter.printFinalTables(engine, config, stepCount, out);
         }
     }
 
@@ -105,8 +107,7 @@ public final class ConsoleRunner {
             stepCount++;
         }
 
-        out.println("\nМоделирование завершено.");
-        ConsolePrinter.printFinalTables(engine, out);
+        ConsolePrinter.printFinalTables(engine, config, stepCount, out);
     }
 
     private void initialize() {

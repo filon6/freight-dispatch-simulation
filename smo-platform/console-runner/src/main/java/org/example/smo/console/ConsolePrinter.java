@@ -1,6 +1,7 @@
 package org.example.smo.console;
 
 import org.example.smo.batch.ProcessingBatch;
+import org.example.smo.config.SimulationConfig;
 import org.example.smo.buffer.PlacementResult;
 import org.example.smo.engine.SimulationEngine;
 import org.example.smo.event.SimulationEvent;
@@ -43,12 +44,13 @@ public final class ConsolePrinter {
 
         out.printf(
             Locale.ROOT,
-            "Создано: %d | Буфер: %d | В работе: %d | Готово: %d | Отказы: %d%n",
+            "Создано: %d | Буфер: %d | В работе: %d | Готово: %d | Отказы: %d | Pотк: %.1f%%%n",
             engine.getGeneratedTotal(),
             queued,
             processing,
             completed,
-            rejected
+            rejected,
+            engine.getGeneratedTotal() == 0 ? 0.0 : 100.0 * rejected / engine.getGeneratedTotal()
         );
 
         out.println("\nИСТОЧНИКИ");
@@ -210,50 +212,92 @@ public final class ConsolePrinter {
         }
     }
 
+    /**
+     * Итоги одного эксперимента: сводка и две таблицы без графиков.
+     * Все числовые показатели берутся из накопленной статистики модели.
+     */
     public static void printFinalTables(
         SimulationEngine engine,
+        SimulationConfig config,
+        int stepCount,
         PrintStream out
     ) {
         Objects.requireNonNull(engine);
+        Objects.requireNonNull(config);
         Objects.requireNonNull(out);
 
-        out.println("ИТОГИ ПО ИСТОЧНИКАМ");
-        out.println(
-            "ID | Создано | Отказы | Готово | Pотк | Tпреб | Tож | Tобсл | Dож | Dобсл"
-        );
+        var stats = engine.getStatistics();
+        var sourceStats = stats.sourceSnapshots();
+        var processorStats = stats.processorSnapshots(engine.getClock().getCurrentTime());
 
-        for (var source : engine.getStatistics().sourceSnapshots().values()) {
+        long generated = engine.getGeneratedTotal();
+        long rejected = sourceStats.values().stream().mapToLong(StatisticsCollector.SourceSnapshot::rejected).sum();
+        long completed = sourceStats.values().stream().mapToLong(StatisticsCollector.SourceSnapshot::completed).sum();
+        double totalTime = engine.getClock().getCurrentTime();
+        double rejectionPercent = generated == 0 ? 0.0 : 100.0 * rejected / generated;
+
+        out.println();
+        out.println("===============================================================================================");
+        out.println("МОДЕЛИРОВАНИЕ ЗАВЕРШЕНО");
+        out.printf(Locale.ROOT, "Время моделирования: %.3f | шагов: %d%n", totalTime, stepCount);
+        out.printf(
+            Locale.ROOT,
+            "Заявок: создано %d; обслужено %d; отказано %d; Pотк = %.1f%%%n",
+            generated, completed, rejected, rejectionPercent
+        );
+        out.println("-----------------------------------------------------------------------------------------------");
+
+        out.println("ИСТОЧНИК | Nген | Nотк | Nобсл | Pотк,% |    Tож |  Tобсл |  Tсист |    Dож |  Dобсл");
+        for (var source : sourceStats.values()) {
             out.printf(
                 Locale.ROOT,
-                "%2d | %7d | %6d | %6d | %5s | %5s | %5s | %6s | %5s | %6s%n",
+                "И%-7d | %4d | %4d | %5d | %6.1f | %6s | %6s | %6s | %6s | %6s%n",
                 source.sourceId(),
                 source.generated(),
                 source.rejected(),
                 source.completed(),
-                metric(source.rejectionProbability()),
-                metric(source.meanStay()),
+                source.rejectionProbability() * 100.0,
                 metric(source.meanWaiting()),
                 metric(source.meanService()),
+                metric(source.meanStay()),
                 metric(source.varianceWaiting()),
                 metric(source.varianceService())
             );
         }
 
-        out.println("\nИТОГИ ПО ПРИБОРАМ");
-        out.println("ID | Занятость | Коэффициент использования");
-
-        for (var processor : engine.getStatistics()
-            .processorSnapshots(engine.getClock().getCurrentTime())
-            .values()) {
+        out.println();
+        out.println("ПРИБОР | Выполнено | Время занятости |   Кисп");
+        var requestStats = stats.requestSnapshots();
+        for (var processor : processorStats.values()) {
+            long handled = requestStats.values().stream()
+                .filter(request -> request.status() == RequestStatus.COMPLETED)
+                .filter(request -> Objects.equals(request.processorId(), processor.processorId()))
+                .count();
 
             out.printf(
                 Locale.ROOT,
-                "%2d | %9s | %s%n",
+                "П%-5d | %9d | %15.3f | %6.2f%%%n",
                 processor.processorId(),
-                metric(processor.busyTime()),
-                metric(processor.utilization())
+                handled,
+                processor.busyTime(),
+                processor.utilization() * 100.0
             );
         }
+
+        double meanServiceTime = (config.serviceTimeMin() + config.serviceTimeMax()) / 2.0;
+        double totalLambda = config.sources().stream().mapToDouble(source -> source.lambda()).sum();
+        if (meanServiceTime > 0.0) {
+            double offeredLoad = totalLambda * meanServiceTime / config.processorCount();
+            out.printf(
+                Locale.ROOT,
+                "%nОценка входной нагрузки rho = Σlambda/Σmu = %.3f (не равна фактическому Кисп)%n",
+                offeredLoad
+            );
+        } else {
+            out.println("\nОценка входной нагрузки rho не определена при нулевом среднем времени обслуживания.");
+        }
+        out.println("Tож, Tобсл, Tсист и дисперсии: по успешно завершённым заявкам каждого источника.");
+        out.println("Дисперсии генеральные (деление на n); при отсутствии наблюдений показано «—».");
     }
 
     private static long count(
