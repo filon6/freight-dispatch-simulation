@@ -11,8 +11,6 @@
     <modules>
         <module>simulation-core</module>
         <module>console-runner</module>
-        <module>simulation-service</module>
-        <module>statistic-service</module>
     </modules>
 
     <properties>

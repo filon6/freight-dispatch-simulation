@@ -8,41 +8,44 @@ skinparam shadowing false
 skinparam maxMessageSize 90
 skinparam BoxPadding 10
 
-
 actor "Пользователь" as User
-boundary "ConsoleRunner" as Runner
-control "SimulationEngine" as Engine
-queue "EventCalendar" as Calendar
-entity "Source" as Source
-control "PlacementDispatcher\n(Д1ОЗ3 / Д1ОО3)" as DP
-collections "Buffer" as Buffer
-control "SelectionDispatcher\n(Д2Б5)" as DV
-participant "ProcessorPool\n(Д2П2 / ПЗ2)" as Pool
-
+boundary "Консольный интерфейс\n(ConsoleRunner)" as Runner
+control "Движок моделирования\n(SimulationEngine)" as Engine
+queue "Календарь событий\n(EventCalendar)" as Calendar
+entity "Источник заявок\n(Source)" as Source
+control "Диспетчер постановки\n(PlacementDispatcher)" as DP
+collections "Буфер заявок\n(Buffer)" as Buffer
+control "Диспетчер выбора\n(SelectionDispatcher)" as DV
+participant "Пул приборов\n(ProcessorPool)" as Pool
 
 == Запуск ==
-User -> Runner: запуск
+User -> Runner: Запустить программу
 note over Runner, Engine
-  ConsoleRunner создаёт компоненты из конфигурации.
-  Затем вызывает Engine.initialize().
+  Консоль создаёт компоненты из конфигурации:
+  источники, буфер, приборы и движок.
 end note
 Runner -> Engine: initialize()
-loop для каждого источника
-  
-Engine -> Source: nextArrivalTime(currentTime)
-Source --> Engine: nextArrivalTime (double) - подумать
-Engine -> Calendar: schedule(SimulationEvent.arrival(nextArrivalTime, sourceId))
-
-note right of Runner: ConsolePrinter.printState(...): шаг 0
+loop Для каждого источника
+  Engine -> Source: nextArrivalTime(currentTime)
+  note right of Source
+    ИБ — бесконечный источник.
+    ИЗ1 — пуассоновский поток;
+    интервалы поступления экспоненциальные.
+  end note
+  Source --> Engine: Время следующего поступления: double
+  Engine -> Calendar: schedule(SimulationEvent.arrival(time, sourceId))
+end
+Engine --> Runner: Инициализация завершена
+note right of Runner: ConsolePrinter.printState(...): шаг 0 (ОД2)
 
 == Пошаговый режим ==
-loop при каждом Enter
+loop Пока модель не завершена; при каждом Enter
   User -> Runner: Enter
   Runner -> Engine: step()
   Engine -> Calendar: popEarliest()
-  Calendar --> Engine: событие
+  Calendar --> Engine: Ближайшее событие (с обновлением Clock)
 
-  alt ARRIVAL
+  alt ARRIVAL — поступление заявки
     Engine -> Source: generateRequest(id, currentTime)
     Source --> Engine: Request
     Engine -> DP: place(request)
@@ -50,109 +53,110 @@ loop при каждом Enter
 
     alt Есть свободная ячейка — Д1ОЗ3
       note over DP, Buffer
-        Буфер находит первую свободную ячейку
-        и размещает в ней новую заявку.
+        Новая заявка занимает первую
+        свободную ячейку буфера.
       end note
       Buffer --> DP: PlacementResult(slotIndex, null)
       note right of DP
         Новая заявка получает статус QUEUED.
-        Отказов нет.
+        Вытеснения и отказа нет.
       end note
-    else Буфер переполнен — Д1ОО3
+    else Буфер заполнен — Д1ОО3
       note over DP, Buffer
-        Буфер выбирает самую старую ожидающую заявку
-        и заменяет её новой в той же ячейке.
+        Самая старая ожидающая заявка
+        вытесняется; новая занимает её ячейку.
       end note
       Buffer --> DP: PlacementResult(slotIndex, evictedRequest)
       note right of DP
-        Старая заявка получает статус REJECTED;
-        вытеснение записывается в журнал.
-        Новая заявка получает статус QUEUED.
+        Старая заявка получает статус REJECTED,
+        новая — QUEUED; отказ записывается.
       end note
       DP -> DV: onRequestEvicted(evictedId)
       note right of DV
-        Исключить вытесненную заявку
-        из ожидающих заявок активного пакета,
-        если она в него входила.
+        Если вытесненная заявка ожидала
+        в активном пакете, исключить её из него.
       end note
     end
 
     DP --> Engine: PlacementResult
-    note over Engine, Calendar
-      Движок планирует следующее ARRIVAL
-      или отменяет оставшиеся при достижении лимита.
-    end note
-  else SERVICE_COMPLETED
+    alt Лимит созданных заявок ещё не достигнут
+      Engine -> Source: nextArrivalTime(currentTime)
+      Source --> Engine: Время следующего поступления: double
+      Engine -> Calendar: schedule(SimulationEvent.arrival(time, sourceId))
+    else Создано targetRequests заявок
+      Engine -> Calendar: cancelPendingArrivals()
+      note over Engine, Calendar
+        Новых заявок больше не будет,
+        но уже принятые продолжают обслуживаться.
+      end note
+    end
+
+  else SERVICE_COMPLETED — окончание обслуживания
     Engine -> Pool: complete(event)
+    Pool --> Engine: Прибор освобождён
+    note right of Engine: Заявка получает статус COMPLETED
     Engine -> DV: onRequestCompleted(requestId)
+    note right of DV
+      Отметить завершение заявки в активном пакете.
+      Новый пакет возможен после завершения всего текущего.
+    end note
   end
 
+  == Выбор пакета и назначение приборов ==
   Engine -> DV: dispatchReady(currentTime)
   note over DV, Pool
-    Д2Б5 — фиксированный пакет одного источника.
-    Д2П2 — назначение свободного прибора по кольцу.
-  end note
-  
-  Engine -> DV: dispatchReady(currentTime)
-
-  note over DV, Pool
-    Д2Б5 — фиксированный пакет заявок
-    одного источника с наивысшим приоритетом.
-
-    Если активного пакета нет или он завершён,
-    диспетчер формирует новый пакет.
-
-    Новые заявки в текущий пакет не добавляются.
+    Д2Б5 — фиксированный пакет заявок одного источника.
+    Приоритет: меньший номер источника выше.
+    Новые заявки в сформированный пакет не добавляются.
   end note
 
-  alt Есть свободный прибор и ожидающая заявка пакета
-
-    loop Пока есть свободные приборы и заявки пакета
+  alt Есть свободный прибор и доступные заявки пакета
+    opt Нет активного пакета или предыдущий завершён
+      DV -> DV: createNextBatch()
+      note right of DV
+        Выбрать приоритетный источник среди ожидающих
+        и зафиксировать заявки пакета.
+      end note
+    end
+    loop Пока есть свободный прибор и заявка текущего пакета
       DV -> Buffer: take(requestId)
       Buffer --> DV: Request
-
       DV -> Pool: assign(request, currentTime)
       note right of Pool
-        Д2П2 — кольцевой выбор свободного прибора.
+        Д2П2 — выбор свободного прибора по кольцу.
         ПЗ2 — равномерное время обслуживания.
       end note
-      Pool --> DV: SimulationEvent (завершение обслуживания)
+      Pool --> DV: SimulationEvent.serviceCompleted(...)
     end
 
   else Все приборы заняты
     note over DV, Pool
-      Назначение невозможно.
-      Заявки продолжают ожидать в буфере.
+      Назначение сейчас невозможно.
+      Ожидающие заявки остаются в буфере.
     end note
 
   else Нет заявок, доступных для назначения
     note over DV, Pool
-      Буфер может быть пустым либо
-      текущий пакет ещё обрабатывается.
-
-      Новый пакет нельзя сформировать,
-      пока активный не завершён.
+      Буфер пуст либо активный пакет ещё обрабатывается,
+      а ожидающих заявок в этом пакете нет.
+      Другой пакет до завершения текущего не выбирается.
     end note
   end
 
   DV --> Engine: List<SimulationEvent>
-
-  loop Для каждого назначенного обслуживания
+  loop Для каждого нового обслуживания
+    note right of Engine: Зафиксировать начало обслуживания (ОР1)
     Engine -> Calendar: schedule(completion)
   end
-
-  DV --> Engine: List<SimulationEvent>
-  loop для каждого назначенного обслуживания
-    Engine -> Calendar: schedule(completion)
-  end
-  Engine --> Runner: Request
-  note right of Runner: ConsolePrinter.printState(...)
+  Engine --> Runner: Request (обработанная на шаге заявка)
+  note right of Runner: ConsolePrinter.printState(...): состояние после шага (ОД2)
 end
 
 == Автоматический режим ==
-User -> Runner: auto
-loop пока модель не завершена
+User -> Runner: a — выполнить до конца
+loop Пока моделирование не завершено
   Runner -> Engine: step()
+  Engine --> Runner: Request
 end
 note right of Runner: ConsolePrinter.printFinalTables(...): две итоговые таблицы
 
